@@ -14,9 +14,10 @@ repository is otherwise about.
 
 **Scope.** This affects Baikal consoles running the `ps4-linux` kernel lineage,
 and only when `apcie_bpcie_buffer` happens to be non-NULL. A NULL pointer takes
-a different branch that uses 6 anyway. The value observed on the one console
-this was found on was **4**. How often it bites elsewhere, and what garbage
-value other machines land on, is not known.
+a different branch that uses 6 anyway. The value observed during this work was
+**4**. Because it comes from whatever the uninitialised pointer holds, other
+systems may land on a different number, and how often it bites in practice is
+not known.
 
 ## The defect
 
@@ -45,12 +46,14 @@ if ( bpcie_buffer )
 its low bits, and uses the result to select which PHY tuning values get
 written.
 
-On the console this was found on it produced **4**.
+On the system where this was found it produced **4**. The value depends on
+whatever the uninitialised pointer happens to hold, so it will not be 4
+everywhere; what is constant is that it is not the board's trace length.
 
 ## What the right value is
 
-The vendor firmware reports it, for both controllers, on the same hardware.
-It reads the value from per-console board data over ICC:
+The vendor firmware reports the real value for both controllers, reading it
+from per-console board data over ICC. On a Slim it prints:
 
 ```
 ahci0: Baikal SATA PHY Trace length : 8      (controller advertises 3 Gbps)
@@ -105,8 +108,8 @@ cliff.
 
 Measured on hardware, before and after: `SStatus 123 SControl 300`,
 `1 ports 6 Gbps` and `configured for UDMA/133` are **byte-identical** across
-three boots at trace length 4 and one at 6. The drive enumerates the same; no
-transport errors appear on either.
+three boots at trace length 4 and one at 6. The drive enumerates identically
+and no transport errors appear on either.
 
 **The link runs at 3.0 Gbps, and the fix does not change that.** `SStatus
 0x123` decodes as DET 3 (device present, communication established), **SPD 2,
@@ -133,8 +136,9 @@ Ethernet work and useful on its own.
 ## What is still wrong with it
 
 **It is a constant, not a measurement.** Trace length is a property of the
-board's routing. 6 is correct for this one; a board routed differently needs a
-different value.
+board's routing. 6 is the value the firmware reports for the Slim's 6 Gbps
+port; a board routed differently needs a different value, and this patch does
+not discover it.
 
 The firmware reads it over ICC. The transport already exists in Linux as
 `bpcie_icc_cmd()` in `drivers/ps4/ps4-bpcie-icc.c` — what is missing is the
@@ -146,18 +150,19 @@ which is probably where to start.
 Until then this trades an uninitialised pointer for a documented constant,
 which is an improvement and not a solution.
 
-## A caution about attributing disk errors
+## Telling this apart from media failure
 
-This was found while chasing EXT4 corruption, and the corruption turned out
-**not** to be caused by it. On the machine in question the damage was a
-genuinely failing USB stick: every `blk_update_request: I/O error` in the log
-was on the USB device, none on the SATA drive, and the kernel logged
-`I/O error while writing superblock` against the stick.
+A mistuned PHY and failing storage both end in a corrupt filesystem, and they
+are distinguishable in a kernel log before anyone guesses.
 
-Both misattributions are easy and they point opposite ways. A mistuned PHY
-produces transport errors — I/O errors, CRC failures, link resets. Unclean
-shutdowns and dying flash produce filesystem metadata damage — inconsistent
-bitmaps, doubly-allocated inodes — with a clean transport underneath.
+A PHY problem shows up at the transport: `blk_update_request: I/O error`,
+`exception Emask`, `SError`, CRC failures, link resets. The filesystem damage
+is downstream of those.
 
-They look similar in a bug report and are distinguishable in a kernel log.
-Check which device the errors name before concluding anything.
+Failing flash or an unclean shutdown shows up as metadata damage with a
+**clean transport underneath**: inconsistent block bitmaps, doubly-allocated
+inodes, `error count since last fsck` climbing, and no ATA errors at all.
+
+Check which device the errors name. On a PS4 running Linux from a USB stick
+there are at least two block devices in play, and the EXT4 errors frequently
+name the one that is not the SATA drive.

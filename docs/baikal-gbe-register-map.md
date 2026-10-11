@@ -48,7 +48,7 @@ Aeolia/Belize `mskc` glue pokes reads back all zeroes here. `sky2` cannot drive 
 corroboration below this is an identification, not a coincidence of sixteen bits.
 
 **It is still not Realtek (`~0x001c`), not Marvell (`0x0141`), not Broadcom
-(`0x0020`/`0x0362`)**, and `lspci` shows no Realtek device on this console — so the community
+(`0x0020`/`0x0362`)**, and `lspci` shows no Realtek device on the hardware under test — so the community
 claims that PS4 ethernet is Marvell or an RTL8111H/G remain refuted. That was always the
 answer to the community claim; it is now complete rather than merely negative.
 
@@ -2570,7 +2570,7 @@ and both trustworthiness arguments are in **§4.2**, "The field packing". Decode
 `0x64`, `0x68`, `0x6c`.
 
 The question closes on evidence rather than on a decode alone: four of the destination
-registers are read-modify-write, and on this console they already hold **exactly** the value
+registers are read-modify-write, and on the part under test they already hold **exactly** the value
 the decode computes — Sony's own programming, surviving the kexec. §4.2 (b) has the log lines.
 
 The warning that made this the highest-value item stands and is now a warning about ports
@@ -3912,7 +3912,7 @@ more than the verdicts, because each is a different argument.
    descriptors out of host memory to find out where to put them. **A block held in reset should be
    far more broken than that.** So the most likely reading is that **the GBE is not one of the four
    held blocks**, and that four held entries are four genuinely unused blocks on a Slim, held by
-   design on a part whose southbridge carries functions this console does not populate.
+   design on a part whose southbridge carries functions this board does not populate.
 
    > **Nothing in attempt 28 shows the GBE held in reset, and nothing in this document says it
    > does.** Four held entries and an unidentified GBE handle are two separate facts, and joining
