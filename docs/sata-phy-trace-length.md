@@ -1,4 +1,4 @@
-# The Baikal SATA PHY is tuned from a hardcoded placeholder
+# The Baikal SATA PHY is tuned from a hardcoded constant
 
 > **A note on references.** This repository publishes the specification, the
 > driver and the corrections log. It does not publish the per-boot serial
@@ -44,21 +44,54 @@ ctlr->apcie_bpcie_buffer = (void *)0x04;   /* "//for ahci 0x024" */
 bpcie_sata_phy_init(&pdev->dev, ctlr);
 ```
 
-A hardcoded `4`, cast to a pointer, with a comment that reads like a note to
-self. Run the decode on it: `4 >> 5` is 0, the floor clamps the first term to
-0, the low bits give 4, and `4 <= 0x12` so the trace length comes out **4**.
+A literal `4`, cast to a pointer. Run the decode on it: `4 >> 5` is 0, the
+floor clamps the first term to 0, the low bits give 4, so the trace length
+comes out **4**.
 
-So the value is not garbage and not random. **It is 4 on every system, every
-boot, deterministically**, and the arithmetic is working correctly on a
-placeholder that was never replaced.
+That is measured, not argued. Across every Linux boot captured during this
+work the value is the same, with no exceptions:
 
-**The likely history, stated as a hypothesis.** That arithmetic decodes a
-packed byte, which is what you would write if you were reading one byte of
-board data. The vendor firmware gets exactly that over ICC. The most probable
-story is that Sony's code dereferenced the pointer to fetch the byte, and the
-dereference was lost when the decompiled code was turned back into C, leaving
-a literal where a read used to be. The `//for ahci 0x024` comment suggests
-whoever did it knew a real value belonged there.
+```
+ci_aeolia 0000:00:14.7: Baikal SATA PHY Trace length : 4      21 of 21 boots
+```
+
+For contrast, the firmware on the same console reports `ahci0: ... : 8` and
+`ahci1: ... : 6`, 25 and 26 times across the same captures. The two sources
+never agree and the Linux figure never varies.
+
+The struct makes that determinism easy to see. It is `kzalloc`'d, three fields
+are set, it is passed to `bpcie_sata_phy_init()` and freed immediately, so
+nothing else can reach it between assignment and use. `bpcie_sata_phy_init()`
+is exported from `ahci.c` and this is its **only caller in the tree**;
+`ahci.c` never calls it itself.
+
+### `0x04` is probably an offset, not a value
+
+The obvious reading is that `0x04` is a placeholder someone meant to replace
+with a real trace length. The comment argues against it. Put both numbers
+through the same arithmetic:
+
+| field value | `>> 5` | clamped first term | `& 0x1F` | trace length |
+|---|---|---|---|---|
+| `0x04`, what is assigned | 0 | 0 | 4 | **4** |
+| `0x24`, what the comment names | 1 | 0 | 4 | **4** |
+
+They are identical, because the clamp discards the top three bits for any
+value below `0x60`. So the comment cannot mean "use `0x24` here instead" --
+that changes nothing. And neither number can be a trace length that was
+intended to be correct, since the firmware wants 6 and 8, which this decode
+produces from `0x06` and `0x08` (or `0x26` and `0x28`, equivalently).
+
+What fits is that `0x04` and `0x024` are **offsets into the board data**, one
+per controller, and the field is named `apcie_bpcie_buffer` because that is
+what it was: a pointer to a buffer. The code would then read one byte at that
+offset and decode it. The vendor firmware does fetch exactly that kind of
+board data over ICC.
+
+**This is a hypothesis, not a finding.** It fits the field's name, the
+comment, the arithmetic, and the mismatch with the firmware's values, and
+nothing here proves it. What makes it worth writing down is that it is
+testable, and the test is in the open-questions section below.
 
 ## What the right value is
 
@@ -87,7 +120,7 @@ identical writes, so the inference does not change the outcome either way.
 ## What the wrong value actually did
 
 Twelve read-modify-writes, same registers and order on both paths. **Nine of
-twelve values differ** between the placeholder-derived `4` and the correct `6`:
+twelve values differ** between the decoded `4` and the correct `6`:
 
 | # | Register | Field | at `4` | at `6` |
 |---|---|---|---|---|
@@ -132,8 +165,8 @@ first: fixing the trace length did **not** take the link from 3 to 6 Gbps. It
 was 3.0 before and 3.0 after. Whatever holds the link at Gen2 is the drive or
 the negotiation, not the PHY tuning, and this change does not address it.
 
-That leaves the honest summary: the fix replaces a placeholder with a sourced
-constant and nothing measurable changed. That is the expected result
+That leaves the honest summary: the fix replaces a hardcoded constant with a
+sourced one and nothing measurable changed. That is the expected result
 when the old value was already inside the correct tolerance bucket, and it is
 not evidence that the old value was fine.
 
@@ -145,7 +178,7 @@ Ethernet work and useful on its own.
 
 **It leaves the read in place, and that is a shortcoming.** The patch changes
 what happens inside the `if (bpcie_buffer)` branch but keeps the branch, so
-the placeholder is still loaded and tested even though both arms now reach 6.
+the field is still loaded and tested even though both arms now reach 6.
 The cleaner change deletes the conditional and its temporaries outright. That
 is a larger diff against a file this project did not write, and it was kept
 minimal deliberately, but a port that wants the defect gone rather than
@@ -165,8 +198,21 @@ call was spotted in the firmware's PHY thread (`icc_nvs_read(block 4,
 offset 0x38, len 1)`, inferred to be a trace-length or board-variant code),
 which is probably where to start.
 
-Until then this trades a placeholder for a documented constant, which is an
-improvement and not a solution.
+**There is a sharper test available, and it has not been run.** If `0x04` and
+`0x024` are offsets into a board-data buffer rather than values, then the byte
+at offset `0x24` in whatever buffer the firmware pulls should decode to 6, and
+the byte at `0x04` should decode to 8, matching what the firmware prints for
+the two controllers. Decoding to 6 requires a byte of `0x06` or `0x26`; to 8,
+`0x08` or `0x28`. So: find any ICC call that returns a board-data buffer, read
+the bytes at those two offsets, and run the decode. If the numbers come out 6
+and 8, the offset hypothesis is confirmed and the ICC command is identified in
+the same move. If they do not, the hypothesis is dead and the field really is
+a value someone hardcoded.
+
+That is the most useful next step on this defect, and it is cheap.
+
+Until then this trades an undocumented constant for a sourced one, which is
+an improvement and not a solution.
 
 ## Telling this apart from media failure
 

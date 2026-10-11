@@ -94,7 +94,7 @@ Throughput went from **0.26 Mbit/s to ~848 Mbit/s** (driver counters) by
 leaving one descriptor unused. The shape fits a descriptor prefetch crossing
 the ring's page boundary. That is inference, not an established cause.
 
-### 3. The SATA PHY tuned from a hardcoded placeholder
+### 3. The SATA PHY tuned from a hardcoded constant
 
 Found while investigating something else. `drivers/ata/ahci.c` decodes the
 Baikal SATA PHY trace length out of `ctlr->apcie_bpcie_buffer`, a `void *`, by
@@ -103,20 +103,27 @@ PHY tuning registers in a `switch`.
 
 The field is assigned in exactly one place, and not in `drivers/ata`:
 `drivers/usb/host/xhci-aeolia.c` sets it to a literal `(void *)0x04` with the
-comment `//for ahci 0x024`. Decode that and the trace length comes out **4**,
-the same on every boot of every console. So it is not garbage memory. It is a
-placeholder nobody replaced, and the arithmetic faithfully decoding it. The
-shape of that arithmetic suggests the original read a real byte through the
-pointer from board data, and the dereference was lost in translation.
+comment `//for ahci 0x024`, then calls the PHY init and frees the struct. That
+is the only caller of `bpcie_sata_phy_init()` in the tree. Decode the literal
+and the trace length is **4**, which 21 of 21 Linux boot captures confirm with
+no exceptions, against the firmware's 6 and 8 for the two controllers.
 
-The firmware reports the real value for the same port. Nine of twelve
-read-modify-writes differ between `4` and the correct `6`.
+Calling it a placeholder is probably wrong, though, and the comment is why.
+`0x04` and `0x24` decode to the *same* 4, because the arithmetic discards the
+top bits below `0x60`, so the comment cannot mean "use `0x24` instead". The
+likelier reading is that both are **offsets into the board data**, which is
+what a field named `apcie_bpcie_buffer` would hold, and that the byte read
+through it was lost when decompiled code was turned back into C. That is a
+hypothesis; `docs/sata-phy-trace-length.md` states it as one and gives the
+test that would settle it.
+
+Nine of twelve read-modify-writes differ between `4` and the correct `6`.
 
 **Nothing measurable changed when it was fixed**, and that is the honest
 result. The link negotiated 3.0 Gbps before and after. Trace lengths 6, 7 and
 8 share one tolerance bucket, so `4` sat one notch below correct rather than
-somewhere wild. Tuning a PHY from a placeholder is still worth closing; it
-just was not the cause of any visible trouble.
+somewhere wild. Tuning a PHY from an undocumented constant is still worth
+closing; it just was not the cause of any visible trouble.
 
 ---
 

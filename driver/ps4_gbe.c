@@ -3239,9 +3239,9 @@ static netdev_tx_t gbe_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	}
 
 	if (head + need - gp->tx_pool_tail > GBE_TX_POOL_BYTES) {
-		/* ponytail: the queue is woken by descriptor reclaim, not by
-		 * pool space, so a pool-bound stall waits for the next reclaim
-		 * to free a descriptor too.  Given the arithmetic above that
+		/* KNOWN LIMITATION: the queue is woken by descriptor reclaim,
+		 * not by pool space, so a pool-bound stall waits for the next
+		 * reclaim to free a descriptor too.  Given the arithmetic above that
 		 * cannot currently happen; add a pool-space wake if it ever
 		 * shows up as stall= climbing on the txwatch[] line.
 		 */
@@ -4145,14 +4145,6 @@ static int gbe_open(struct net_device *ndev)
 	 * and txwatch[] lines so this stops being an inference.
 	 */
 	netif_start_queue(ndev);
-	/* ~~ponytail: carrier is still asserted unconditionally here ... Remove
-	 * it the moment link comes up for real.~~  DONE IN #50.  The condition
-	 * that comment set has been met: attempt 32 brought the link up for
-	 * real and attempt 33 held it for a whole boot, so the assertion is
-	 * gone and the call below reads 0x04 bit0 instead.  Kept as a struck
-	 * line rather than deleted because it is the debt marker that drove the
-	 * change, and this project does not quietly erase its own reasoning.
-	 */
 	/* #50: the carrier now reflects 0x04 bit0 rather than being
 	 * asserted on faith.  gbe_link_sample() below syncs it, and the
 	 * 3 s gbe_phy_ctrl() tick keeps it current from here on.
@@ -4639,8 +4631,25 @@ static void gbe_shutdown(struct pci_dev *pdev)
 	struct ps4_gbe *gp = pci_get_drvdata(pdev);
 	unsigned long flags;
 
-	if (!gp)
+	if (!gp || !gp->ndev)
 		return;
+
+	/*
+	 * Detach before stopping anything.  device_shutdown() runs with the
+	 * network stack still live, so without this an in-flight
+	 * gbe_start_xmit() can take gp->lock after the engines are reset and
+	 * ring the doorbell on a dead engine.  netif_device_detach() stops
+	 * the queue and makes the stack treat the device as absent, so no new
+	 * transmit starts; taking gp->lock then waits out any xmit already
+	 * inside the critical section.
+	 *
+	 * Deliberately NOT a full gbe_close(): this path may not sleep, so
+	 * there is no rtnl_lock(), no dev_close() and no
+	 * cancel_delayed_work_sync().  The timer and the PHY work item can
+	 * still fire here; both only touch registers, and the engines being
+	 * reset underneath them is harmless for the microseconds that remain.
+	 */
+	netif_device_detach(gp->ndev);
 
 	spin_lock_irqsave(&gp->lock, flags);
 	gbe_stop_engines(gp);
