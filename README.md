@@ -102,14 +102,6 @@ below correct rather than somewhere wild. An uninitialised pointer selecting
 PHY tuning is still a defect worth closing; it just was not the one causing
 visible trouble here.
 
-**It is tempting to blame this for filesystem corruption, and on this machine
-that would have been wrong.** The EXT4 damage turned out to be a genuinely
-failing USB stick: all ten `blk_update_request` I/O errors named the USB
-device, none named the SATA drive. A mistuned PHY and dying flash produce
-different evidence, transport errors versus metadata damage with a clean
-transport underneath, and they are distinguishable in a kernel log. Check
-which device the errors name before concluding anything, in either direction.
-
 ---
 
 ## Repository layout
