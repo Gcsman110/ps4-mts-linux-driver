@@ -4629,31 +4629,39 @@ MODULE_DEVICE_TABLE(pci, gbe_id_table);
 static void gbe_shutdown(struct pci_dev *pdev)
 {
 	struct ps4_gbe *gp = pci_get_drvdata(pdev);
-	unsigned long flags;
 
 	if (!gp || !gp->ndev)
 		return;
 
 	/*
-	 * Detach before stopping anything.  device_shutdown() runs with the
-	 * network stack still live, so without this an in-flight
-	 * gbe_start_xmit() can take gp->lock after the engines are reset and
-	 * ring the doorbell on a dead engine.  netif_device_detach() stops
-	 * the queue and makes the stack treat the device as absent, so no new
-	 * transmit starts; taking gp->lock then waits out any xmit already
-	 * inside the critical section.
+	 * Run the real teardown, not a partial one.
 	 *
-	 * Deliberately NOT a full gbe_close(): this path may not sleep, so
-	 * there is no rtnl_lock(), no dev_close() and no
-	 * cancel_delayed_work_sync().  The timer and the PHY work item can
-	 * still fire here; both only touch registers, and the engines being
-	 * reset underneath them is harmless for the microseconds that remain.
+	 * This hook exists because of the first bug in this driver's history:
+	 * the PHY arrives after a kexec carrying state its previous owner left
+	 * behind, and a successor that does not know to clear it sees a dead
+	 * link.  This driver should not hand on the condition it took
+	 * twenty-nine boots to diagnose.
+	 *
+	 * This path MAY sleep.  device_shutdown() is reached from
+	 * kernel_restart_prepare() in process context and itself calls
+	 * wait_for_device_probe() and cpufreq_suspend(), so rtnl_lock() and
+	 * dev_close() are both legal here -- dev_close() asserts RTNL and
+	 * calls might_sleep(), and bnx2x_shutdown() is the in-tree precedent
+	 * for taking rtnl on this path.
+	 *
+	 * netif_device_detach() first, so the stack treats the device as
+	 * absent and starts no new transmit while the close runs.  Then
+	 * dev_close() drives gbe_close(), which is the teardown this driver
+	 * already tests on every ifdown: it syncs the PHY work item, kills
+	 * the timer, disables NAPI, stops the engines and frees the IRQ.
+	 * Reusing it means there is one teardown path rather than two that
+	 * can drift apart.
 	 */
+	rtnl_lock();
 	netif_device_detach(gp->ndev);
-
-	spin_lock_irqsave(&gp->lock, flags);
-	gbe_stop_engines(gp);
-	spin_unlock_irqrestore(&gp->lock, flags);
+	if (netif_running(gp->ndev))
+		dev_close(gp->ndev);
+	rtnl_unlock();
 }
 
 static struct pci_driver gbe_driver = {
