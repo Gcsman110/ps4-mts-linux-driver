@@ -4,9 +4,13 @@ A Linux gigabit Ethernet driver for the PlayStation 4 Slim's Baikal
 southbridge, written from a hardware specification recovered by reverse
 engineering. There was no vendor source, no datasheet and no documentation.
 
-It runs at line rate. An external speed test, measured by a remote server over
-the public internet with this driver in the path, reports **711 Mbit/s down /
-768 Mbit/s up**.
+It reaches roughly **850 Mbit/s** by the driver's own counters, which is about
+90% of the ~940 Mbit/s a TCP payload can occupy on a gigabit link. An external
+speed test over the public internet reports 711 down / 768 up, with an ISP in
+the path, so treat that as a floor rather than a measurement of the link.
+
+Not yet measured with `iperf3` against a host on the same LAN, which is what
+would actually characterise it.
 
 ```
 eth0: Baikal GBE at xx:xx:xx:xx:xx:xx, IRQ 34
@@ -40,10 +44,16 @@ sees the original, and this project had no such separation: the same person
 read the firmware and wrote the driver.
 
 The discipline actually applied: **register offsets, bit positions, value
-sequences and ordering are facts about hardware and are recorded. Decompiler
-output is derivative and never entered the repository.** No Sony code, no
-firmware images, and no ROM dumps are present here or in this repository's
-history.
+sequences and ordering are facts about hardware and are recorded. No
+decompiler output produced by this project entered the repository.** No
+firmware images and no ROM dumps are present here or in this history.
+
+One qualification, because the stronger claim would be false. The SATA patch
+necessarily shows the lines it removes, and those lines are themselves a
+decompiler dump of Sony's driver that already ships in the `ps4-linux` tree.
+That is quoted vendor-derived code, not this project's own decompilation, and
+it cannot be avoided in a patch. `docs/sata-phy-trace-length.md` describes
+that code in prose rather than reproducing it, for the same reason.
 
 ---
 
@@ -84,23 +94,29 @@ Throughput went from **0.26 Mbit/s to ~848 Mbit/s** (driver counters) by
 leaving one descriptor unused. The shape fits a descriptor prefetch crossing
 the ring's page boundary. That is inference, not an established cause.
 
-### 3. The SATA PHY tuned from an uninitialised pointer
+### 3. The SATA PHY tuned from a hardcoded placeholder
 
-Found while investigating something else. `drivers/ata/ahci.c` derived the
-Baikal SATA PHY trace length from a `void *` that is **declared in `ahci.h`
-and assigned nowhere in `drivers/ata`**, casting an uninitialised pointer to an
-`int` and taking its low bits. That value selects PHY tuning registers in a
-`switch`, so the boot disk's link was being tuned from stale memory.
+Found while investigating something else. `drivers/ata/ahci.c` decodes the
+Baikal SATA PHY trace length out of `ctlr->apcie_bpcie_buffer`, a `void *`, by
+shifting and masking it as though it were a packed byte. The result selects
+PHY tuning registers in a `switch`.
 
-The firmware reports the real value for the same port. Twelve
-read-modify-writes differ between the garbage value and the correct one.
+The field is assigned in exactly one place, and not in `drivers/ata`:
+`drivers/usb/host/xhci-aeolia.c` sets it to a literal `(void *)0x04` with the
+comment `//for ahci 0x024`. Decode that and the trace length comes out **4**,
+the same on every boot of every console. So it is not garbage memory. It is a
+placeholder nobody replaced, and the arithmetic faithfully decoding it. The
+shape of that arithmetic suggests the original read a real byte through the
+pointer from board data, and the dereference was lost in translation.
+
+The firmware reports the real value for the same port. Nine of twelve
+read-modify-writes differ between `4` and the correct `6`.
 
 **Nothing measurable changed when it was fixed**, and that is the honest
 result. The link negotiated 3.0 Gbps before and after. Trace lengths 6, 7 and
-8 share one tolerance bucket, so the garbage value of 4 was sitting one notch
-below correct rather than somewhere wild. An uninitialised pointer selecting
-PHY tuning is still a defect worth closing; it just was not the one causing
-visible trouble here.
+8 share one tolerance bucket, so `4` sat one notch below correct rather than
+somewhere wild. Tuning a PHY from a placeholder is still worth closing; it
+just was not the cause of any visible trouble.
 
 ---
 
@@ -193,7 +209,7 @@ to the correct behaviour.
 |---|---|---|
 | `residue` | `1` | `0` leaves the shutdown bit set, reproduces the dead link |
 | `txring` | `255` | `256` restores the last-descriptor hang |
-| `carrier` | `1` | `0` asserts carrier unconditionally, as pre-#50 builds did |
+| `carrier` | `1` | `0` asserts carrier unconditionally, even when the PHY reports no link |
 | `phy_ctrl` | `0` | `1` runs the firmware's PHY link-acquisition loop |
 
 `ps4_gbe.txring=256` is the useful one: it reproduces the headline bug on
@@ -215,6 +231,9 @@ someone other than the author.
   reads it from per-console board data over ICC; the transport exists in
   `drivers/ps4/ps4-bpcie-icc.c` but the command for that read has not been
   decoded. Correct for this board, wrong for a board with different routing.
+- **The SATA patch neutralises the bad read without removing it.** Both arms
+  of the conditional now reach 6, but the placeholder is still loaded and
+  tested. Deleting the conditional outright is the better change.
 
 ---
 
@@ -240,3 +259,18 @@ second one.
 ## Author
 
 Gabriel Stewart, 2026.
+
+### How this was written
+
+The reverse engineering, the hardware testing and every decision about what to
+believe are mine. The driver was written and the notes were drafted with heavy
+use of an AI assistant, working from UART captures and disassembly that I ran
+and checked.
+
+Saying so matters here for a specific reason. This repository asks to be
+trusted on measurements, and the corrections log exists because several
+confident claims in it turned out to be wrong. A reader deciding how much
+weight to give a number should know how it was produced. Every figure quoted
+in these documents came off hardware; the reasoning around them had a second
+pair of eyes on it, not always a reliable one, which is the point of keeping
+the log.

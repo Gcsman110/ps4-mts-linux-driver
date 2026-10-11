@@ -27,7 +27,8 @@ config PS4_GBE
 	  Driver for the gigabit Ethernet controller in the PlayStation 4
 	  Slim's Baikal southbridge, PCI function 00:14.1, device ID
 	  104d:90d8. Written from a hardware specification recovered by
-	  reverse engineering; see the register map in this repository.
+	  reverse engineering, published at
+	  https://github.com/Gcsman110/ps4-mts-linux-driver
 
 	  The PHY is a MediaTek MT7531-family GPHY on the same die, reached
 	  through the controller's own MDIO window.

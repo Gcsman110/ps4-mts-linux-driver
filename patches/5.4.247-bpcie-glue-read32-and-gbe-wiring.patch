@@ -37,8 +37,8 @@ index 2d4eb2f28..8b04e3fe7 100644
  source "drivers/net/ethernet/silan/Kconfig"
  source "drivers/net/ethernet/sis/Kconfig"
  source "drivers/net/ethernet/smsc/Kconfig"
-+source "drivers/net/ethernet/sony/Kconfig"
  source "drivers/net/ethernet/socionext/Kconfig"
++source "drivers/net/ethernet/sony/Kconfig"
  source "drivers/net/ethernet/stmicro/Kconfig"
  source "drivers/net/ethernet/sun/Kconfig"
 diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
@@ -49,8 +49,8 @@ index 05abebc17..df558c9c3 100644
  obj-$(CONFIG_NET_VENDOR_SOLARFLARE) += sfc/
  obj-$(CONFIG_NET_VENDOR_SGI) += sgi/
  obj-$(CONFIG_NET_VENDOR_SMSC) += smsc/
-+obj-$(CONFIG_NET_VENDOR_SONY) += sony/
  obj-$(CONFIG_NET_VENDOR_SOCIONEXT) += socionext/
++obj-$(CONFIG_NET_VENDOR_SONY) += sony/
  obj-$(CONFIG_NET_VENDOR_STMICRO) += stmicro/
  obj-$(CONFIG_NET_VENDOR_SUN) += sun/
 diff --git a/drivers/ps4/ps4-bpcie.c b/drivers/ps4/ps4-bpcie.c

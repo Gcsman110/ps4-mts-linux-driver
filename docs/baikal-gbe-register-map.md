@@ -2557,7 +2557,7 @@ for each multicast address:
 > question about this driver or this document. The one remaining TX item is **why the last
 > descriptor hangs**, which is a question about silicon with a labelled inference against it
 > (descriptor prefetch crossing the page boundary) and no instrument in this project able to
-> test it. **End-to-end IP also moves**: the user's browser completed a speed test against a
+> test it. **End-to-end IP also moves**: a browser on the console completed a speed test against a
 > remote server over the public internet, so userspace had working connectivity — the DHCP
 > *lease* is still not in any log, which is the narrow thing attempt 30's caveat was about.
 

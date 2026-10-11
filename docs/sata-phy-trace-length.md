@@ -1,4 +1,4 @@
-# The Baikal SATA PHY is tuned from an uninitialised pointer
+# The Baikal SATA PHY is tuned from a hardcoded placeholder
 
 > **A note on references.** This repository publishes the specification, the
 > driver and the corrections log. It does not publish the per-boot serial
@@ -12,43 +12,53 @@ Found while investigating something unrelated: the PS4's own boot log
 complaining about its disk. It has nothing to do with the Ethernet driver this
 repository is otherwise about.
 
-**Scope.** This affects Baikal consoles running the `ps4-linux` kernel lineage,
-and only when `apcie_bpcie_buffer` happens to be non-NULL. A NULL pointer takes
-a different branch that uses 6 anyway. The value observed during this work was
-**4**. Because it comes from whatever the uninitialised pointer holds, other
-systems may land on a different number, and how often it bites in practice is
-not known.
+**Scope.** This affects Baikal consoles running the `ps4-linux` kernel lineage.
+It is gated on `apcie_bpcie_buffer` being non-NULL, and a NULL field takes
+a different branch that uses 6 anyway. In practice the assignment in
+`xhci-aeolia.c` makes the field non-NULL on every boot, so the decode always
+runs and always yields **4**.
 
 ## The defect
 
-`drivers/ata/ahci.c` computes the Baikal SATA PHY trace length like this:
-
-```c
-void *apcie_bpcie_buffer;                       /* declared in ahci.h */
-
-bpcie_buffer = (int)ctlr_->apcie_bpcie_buffer;
-if ( bpcie_buffer )
-{
-    trace_length = 6;
-    v55 = (unsigned __int8)bpcie_buffer >> 5;
-    v56 = v55 - 2;
-    if ( v55 <= 2 )
-      v56 = 0;
-    v57 = v56 + ((_QWORD)ctlr_->apcie_bpcie_buffer & 0x1F);
-    if ( v57 <= 0x12 )
-      trace_length = v56 + ((_QWORD)ctlr_->apcie_bpcie_buffer & 0x1F);
-    switch ( trace_length ) { /* ... PHY tuning register writes ... */ }
-}
-```
-
-`apcie_bpcie_buffer` is **declared in `ahci.h` and assigned nowhere in
-`drivers/ata`.** The code casts an uninitialised pointer to an `int`, takes
-its low bits, and uses the result to select which PHY tuning values get
+`drivers/ata/ahci.c` picks the Baikal SATA PHY trace length by decoding a
+packed byte out of `ctlr->apcie_bpcie_buffer`, a `void *` field on the
+controller struct. The decode takes the top three bits as one term, subtracts
+2 with a floor of 0, adds the low five bits, and accepts the result if it is
+at most `0x12`. That value then selects which PHY tuning registers get
 written.
 
-On the system where this was found it produced **4**. The value depends on
-whatever the uninitialised pointer happens to hold, so it will not be 4
-everywhere; what is constant is that it is not the board's trace length.
+Describing it rather than quoting it is deliberate: the code in `ps4-linux` is
+itself a decompiler dump of Sony's driver, and reproducing it here would mean
+republishing decompiled vendor code. The patch has to show the lines it
+removes; this document does not.
+
+**The field is not a pointer to anything.** It is assigned once, and not in
+`drivers/ata`:
+
+```c
+/* drivers/usb/host/xhci-aeolia.c */
+ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
+ctlr->r_mem = r_mem;
+ctlr->dev_id = 0x90DE104D;
+ctlr->apcie_bpcie_buffer = (void *)0x04;   /* "//for ahci 0x024" */
+bpcie_sata_phy_init(&pdev->dev, ctlr);
+```
+
+A hardcoded `4`, cast to a pointer, with a comment that reads like a note to
+self. Run the decode on it: `4 >> 5` is 0, the floor clamps the first term to
+0, the low bits give 4, and `4 <= 0x12` so the trace length comes out **4**.
+
+So the value is not garbage and not random. **It is 4 on every system, every
+boot, deterministically**, and the arithmetic is working correctly on a
+placeholder that was never replaced.
+
+**The likely history, stated as a hypothesis.** That arithmetic decodes a
+packed byte, which is what you would write if you were reading one byte of
+board data. The vendor firmware gets exactly that over ICC. The most probable
+story is that Sony's code dereferenced the pointer to fetch the byte, and the
+dereference was lost when the decompiled code was turned back into C, leaving
+a literal where a read used to be. The `//for ahci 0x024` comment suggests
+whoever did it knew a real value belonged there.
 
 ## What the right value is
 
@@ -77,7 +87,7 @@ identical writes, so the inference does not change the outcome either way.
 ## What the wrong value actually did
 
 Twelve read-modify-writes, same registers and order on both paths. **Nine of
-twelve values differ** between the garbage `4` and the correct `6`:
+twelve values differ** between the placeholder-derived `4` and the correct `6`:
 
 | # | Register | Field | at `4` | at `6` |
 |---|---|---|---|---|
@@ -96,8 +106,8 @@ twelve values differ** between the garbage `4` and the correct `6`:
 
 Values rise monotonically with trace length across all five buckets
 (`0x204C[21:16]`: 0x1D → 0x1E → 0x20 → 0x24 → 0x26), so this is a
-length-indexed equaliser and de-emphasis table. The garbage `4` selected the
-bucket **one notch below** correct.
+length-indexed equaliser and de-emphasis table. The `4` selected the bucket
+**one notch below** correct.
 
 ## Why this is safer to change than it sounds
 
@@ -122,8 +132,8 @@ first: fixing the trace length did **not** take the link from 3 to 6 Gbps. It
 was 3.0 before and 3.0 after. Whatever holds the link at Gen2 is the drive or
 the negotiation, not the PHY tuning, and this change does not address it.
 
-That leaves the honest summary: the fix replaces an uninitialised pointer with
-a sourced constant and nothing measurable changed. That is the expected result
+That leaves the honest summary: the fix replaces a placeholder with a sourced
+constant and nothing measurable changed. That is the expected result
 when the old value was already inside the correct tolerance bucket, and it is
 not evidence that the old value was fine.
 
@@ -132,6 +142,14 @@ not evidence that the old value was fine.
 [`../patches/5.4.247-baikal-sata-phy-trace-length.patch`](../patches/5.4.247-baikal-sata-phy-trace-length.patch)
 replaces the derivation with the constant. The patch is independent of the
 Ethernet work and useful on its own.
+
+**It leaves the read in place, and that is a shortcoming.** The patch changes
+what happens inside the `if (bpcie_buffer)` branch but keeps the branch, so
+the placeholder is still loaded and tested even though both arms now reach 6.
+The cleaner change deletes the conditional and its temporaries outright. That
+is a larger diff against a file this project did not write, and it was kept
+minimal deliberately, but a port that wants the defect gone rather than
+neutralised should remove the whole thing.
 
 ## What is still wrong with it
 
@@ -147,8 +165,8 @@ call was spotted in the firmware's PHY thread (`icc_nvs_read(block 4,
 offset 0x38, len 1)`, inferred to be a trace-length or board-variant code),
 which is probably where to start.
 
-Until then this trades an uninitialised pointer for a documented constant,
-which is an improvement and not a solution.
+Until then this trades a placeholder for a documented constant, which is an
+improvement and not a solution.
 
 ## Telling this apart from media failure
 

@@ -637,7 +637,7 @@ static int gbe_phy_rmw(struct ps4_gbe *gp, u8 reg, u16 clear, u16 set)
 /*
  * THE TEARDOWN BISECT.  THIS IS THE POINT OF BUILD #35.
  *
- * THE PROBLEM HAS INVERTED.  The user has confirmed that under Orbis this
+ * THE PROBLEM HAS INVERTED.  Confirmed on hardware: under Orbis this
  * console links at gigabit and browses the internet normally, and we kexec
  * into Linux from that running Orbis.  The magnetics, the cable, the switch
  * port and the PHY silicon are therefore provably fine.
@@ -1047,7 +1047,7 @@ static void gbe_link_sample(struct ps4_gbe *gp, const char *tag, unsigned int n)
  * bit9 and restart autoneg on acquisition timeout -- 0xde169c2a-0xde169cf0 for
  * the poll, 0xde169e75 for the retry branch.  A ROM-exact build would run it.
  *
- * #36 IS NOT A ROM-EXACTNESS PASS.  The user's instruction for this build is
+ * #36 IS NOT A ROM-EXACTNESS PASS.  The intent for this build is
  * to get closer to a working link, not to be faithful.  The loop ran for dozens
  * of rounds across #32-#34 and produced a link exactly zero times, and while it
  * runs it destroys the stable state that any measurement needs.  Running it
@@ -2493,7 +2493,7 @@ static void gbe_rings_init(struct ps4_gbe *gp)
  * The body is 33 bytes of literal + the stage name (4..9) + the us field
  * (1..4 digits) + five 8-digit hex fields, so the fourteen lines total 1,742
  * bytes including CRLF.  115200 8N1 carries 11520 bytes/s, so #42 costs
- * ~151 ms of wire time ONCE per ndo_open -- bounded by the user bringing the
+ * ~151 ms of wire time ONCE per ndo_open -- bounded by an operator bringing the
  * interface up, never periodic.  For scale, #41's two BAR0 dumps cost 1,264
  * bytes and ~110 ms once at probe.  Nothing periodic changed, so attempt
  * 25's steady state of ~170 bytes/s stands.
@@ -3152,6 +3152,7 @@ static netdev_tx_t gbe_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	struct gbe_desc *d;
 	unsigned long flags;
 	u32 idx, off, w0, ctl_pre, ctl_post;
+	bool logging;
 	u64 head;
 
 	if (rawlen > GBE_RX_BUF_SIZE) {		/* MTU is capped at 1500 */
@@ -3310,9 +3311,19 @@ static netdev_tx_t gbe_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	 * matters the moment TX moves at all; it is not a theory about why TX
 	 * does not move.  The samples either side are kept unchanged.
 	 */
-	ctl_pre = gbe_rd(gp, GBE_TXDMA_CTL);
+	/*
+	 * Both reads feed the bounded log below and nothing else.  Past the
+	 * sample budget they are two uncached round trips across the
+	 * southbridge's PCIe link on every packet, held under
+	 * spin_lock_irqsave, for a line that is never printed -- so they are
+	 * gated on the same condition the log is.  The doorbell's own
+	 * read-modify-write stays unconditional: that one is the write.
+	 */
+	logging = gp->xmit_logged < GBE_XMIT_SAMPLES;
+
+	ctl_pre = logging ? gbe_rd(gp, GBE_TXDMA_CTL) : 0;
 	gbe_doorbell(gp, GBE_TXDMA_CTL);
-	ctl_post = gbe_rd(gp, GBE_TXDMA_CTL);
+	ctl_post = logging ? gbe_rd(gp, GBE_TXDMA_CTL) : 0;
 
 	/*
 	 * The first thing the next log has to settle is whether this function
@@ -3322,7 +3333,7 @@ static netdev_tx_t gbe_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	 * FIRST/LAST bits and the 16-bit length field (spec S5.4, still
 	 * unconfirmed against silicon -- S8 question 3) are readable directly.
 	 */
-	if (gp->xmit_logged < GBE_XMIT_SAMPLES) {
+	if (logging) {
 		gp->xmit_logged++;
 		netdev_info(ndev,
 			    "xmit[%u]: rawlen=%u len=%u idx=%u off=0x%05x w0=%08x w1=%08x free=%u txctl=0x%08x->0x%08x txcur=0x%08x q=%d carrier=%d\n",
@@ -4560,8 +4571,15 @@ static int gbe_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ndev->netdev_ops = &gbe_netdev_ops;
 	ndev->min_mtu = GBE_MIN_MTU;
 	ndev->max_mtu = GBE_MAX_MTU;		/* no jumbo, spec S7.9 */
+	/*
+	 * Both are always on and there is deliberately no hw_features here.
+	 * Listing them there would advertise them as runtime-switchable, and
+	 * without an ndo_set_features an `ethtool -K eth0 rx off` would
+	 * report success and change nothing -- the RX path does not consult
+	 * ndev->features at all.  Leaving hw_features clear makes ethtool
+	 * report them as fixed, which is the truth.
+	 */
 	ndev->features |= NETIF_F_RXCSUM | NETIF_F_HW_VLAN_CTAG_RX;
-	ndev->hw_features = ndev->features;
 
 	gbe_napi_add(ndev, &gp->napi, gbe_poll);
 	pci_set_drvdata(pdev, gp);
@@ -4602,11 +4620,39 @@ static const struct pci_device_id gbe_id_table[] = {
 };
 MODULE_DEVICE_TABLE(pci, gbe_id_table);
 
+/*
+ * Leave the engines stopped on the way out, including on kexec.
+ *
+ * The PCI core clears bus mastering before handing control on, so a DMA
+ * engine left running is not a memory-corruption hazard.  The reason this
+ * hook exists is the first bug in this driver's history: the PHY arrives
+ * after a kexec carrying state its previous owner left behind, and a
+ * successor that does not know to clear it sees a dead link.  This driver
+ * should not hand on the condition it spent twenty-nine boots diagnosing.
+ *
+ * Deliberately NOT a full gbe_close(): the kernel is on its way out, so
+ * nothing here can sleep or wait on a work item.  It stops the engines and
+ * masks interrupts, and leaves the rest to the reset the next kernel does.
+ */
+static void gbe_shutdown(struct pci_dev *pdev)
+{
+	struct ps4_gbe *gp = pci_get_drvdata(pdev);
+	unsigned long flags;
+
+	if (!gp)
+		return;
+
+	spin_lock_irqsave(&gp->lock, flags);
+	gbe_stop_engines(gp);
+	spin_unlock_irqrestore(&gp->lock, flags);
+}
+
 static struct pci_driver gbe_driver = {
 	.name		= DRV_NAME,
 	.id_table	= gbe_id_table,
 	.probe		= gbe_probe,
 	.remove		= gbe_remove,
+	.shutdown	= gbe_shutdown,
 };
 
 module_pci_driver(gbe_driver);
