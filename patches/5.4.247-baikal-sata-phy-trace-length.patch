@@ -1,0 +1,57 @@
+diff --git a/drivers/ata/ahci.c b/drivers/ata/ahci.c
+index a96220c8ea6a..2a089ca0bdcc 100644
+--- a/drivers/ata/ahci.c
++++ b/drivers/ata/ahci.c
+@@ -2463,14 +2463,45 @@ void bpcie_sata_phy_init(struct device *dev, struct ahci_controller *ctlr)
+   bpcie_buffer = (int)ctlr_->apcie_bpcie_buffer;
+   if ( bpcie_buffer )
+   {
++    /*
++     * PS4 Baikal: the trace length used to be derived from
++     * ctlr_->apcie_bpcie_buffer. That field is declared in ahci.h and
++     * ASSIGNED NOWHERE in drivers/ata -- the code cast an uninitialised
++     * pointer to an int and took its low bits. On a PS4 Slim (CUH-2xxx)
++     * that produced 4, and trace_length selects PHY tuning registers in
++     * the switch below, so the SATA PHY was being tuned from stale stack
++     * or heap contents.
++     *
++     * The vendor firmware reports the real values for this board, which it
++     * reads from per-console data over ICC:
++     *
++     *     ahci0: Baikal SATA PHY Trace length : 8   (advertises 3 Gbps)
++     *     ahci1: Baikal SATA PHY Trace length : 6   (advertises 6 Gbps, ada0)
++     *
++     * Linux brings up one controller, which advertises "1 ports 6 Gbps" and
++     * carries the same HGST drive Orbis enumerates as ada0 on ahci1. On that
++     * basis 6 is this port's value. That identification is an inference from
++     * advertised capability and attached drive, not from anything naming the
++     * port -- but 6, 7 and 8 select identical writes, so it does not change
++     * the outcome. Those are CAPABILITIES, not link speeds: the link
++     * negotiates 3.0 Gbps either way, which SStatus 0x123 states directly
++     * (SPD field = 2 = Gen2). This change does not alter that.
++     *
++     * ahci.c already uses 6 on its other path -- the apcie_bpcie_buffer ==
++     * NULL branch below, which prints 6 and falls into the same label as
++     * case 6, running the same twelve writes. So both paths already agree on
++     * 6; the only thing that ever disagreed was the value derived from the
++     * uninitialised pointer.
++     *
++     * PROPER FIX, NOT DONE HERE: read it from ICC like the firmware does.
++     * The transport already exists as bpcie_icc_cmd() in
++     * drivers/ps4/ps4-bpcie-icc.c; what is missing is the major/minor for
++     * the board-data read, which has not been decoded. Until then this is
++     * correct for this board and wrong for any board with a different
++     * trace length, so it is a constant with a known ceiling rather than a
++     * general solution.
++     */
+     trace_length = 6;
+-    v55 = (unsigned __int8)bpcie_buffer >> 5;
+-    v56 = v55 - 2;
+-    if ( v55 <= 2 )
+-      v56 = 0;
+-    v57 = v56 + ((_QWORD)ctlr_->apcie_bpcie_buffer & 0x1F);
+-    if ( v57 <= 0x12 )
+-      trace_length = v56 + ((_QWORD)ctlr_->apcie_bpcie_buffer & 0x1F);
+     dev_info(dev, "Baikal SATA PHY Trace length : %d\n", trace_length);
+     switch ( trace_length )
+     {

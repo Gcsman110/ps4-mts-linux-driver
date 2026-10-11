@@ -1,0 +1,28 @@
+# Build artefacts
+*.o
+*.ko
+*.a
+*.cmd
+build/
+
+# Never commit firmware dumps, kernel images or symbol tables
+*.bin
+kernel.bin
+bzImage*
+vmlinux*
+System.map*
+*.elf
+
+# Logs carry per-console data: MAC addresses, EFUSE trim, network details
+*.log
+logs/
+
+# Editor and OS noise
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
