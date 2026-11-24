@@ -35,6 +35,14 @@
 
 #define DRV_NAME	"ps4_gbe"
 
+/*
+ * Periodic watch, link and gate diagnostics are disabled by default.
+ * Only the printing is gated, never the link monitoring or recovery logic.
+ */
+static bool gbe_debug;
+module_param_named(debug, gbe_debug, bool, 0644);
+MODULE_PARM_DESC(debug, "Print periodic link, watchdog and gate diagnostics");
+
 /* Developed on 5.4; the tree this lands in next is 6.15.  These two APIs are
  * the only ones that differ, so bridge them here instead of forking the file.
  */
@@ -788,6 +796,9 @@ static void gbe_gate_sample(struct ps4_gbe *gp, const char *where)
 	int ret = gbe_cl45_read(gp, CL45(0x00a2, 0x1e), &g1) ?:
 		  gbe_cl45_read(gp, CL45(0x00a2, 0x1e), &g2);
 
+	if (!gbe_debug && !strcmp(where, "ctrl"))
+		return;
+
 	dev_info(&gp->pdev->dev,
 		 "gate[%s]: cl45 0x00a2.1e=%04x/%04x bit15=%d mdio=%d\n",
 		 where, g1, g2, !!(g2 & BIT(15)), ret);
@@ -931,14 +942,19 @@ static void gbe_link_sample(struct ps4_gbe *gp, const char *tag, unsigned int n)
 			gp->phy_quiet = true;
 	}
 
-	netdev_info(gp->ndev,
-		    "link%s[%u]: reg04=0x%08x up=%d speed=%u fdx=%d bmsr=%04x/%04x bmcr=%04x gtcr=%04x anar=%04x stat1000=%04x phylink=%d aneg=%d carrier=%d chg=%u rnd=%u mdio=%d\n",
-		    tag, n, ctrl, up,
-		    (ctrl >> CTRL_SPEED_SHIFT) & CTRL_SPEED_MASK,
-		    !!(ctrl & CTRL_FULL_DUPLEX),
-		    bmsr1, bmsr2, bmcr, gtcr, anar, stat1000,
-		    !!(bmsr2 & BMSR_LSTATUS), !!(bmsr2 & BMSR_ANEGCOMPLETE),
-		    carrier, gp->linkchg_count, gp->phy_round, ret);
+	if (gbe_debug || strcmp(tag, "ctrl"))
+		netdev_info(gp->ndev,
+			    "link%s[%u]: reg04=0x%08x up=%d speed=%u fdx=%d "
+			    "bmsr=%04x/%04x bmcr=%04x gtcr=%04x anar=%04x "
+			    "stat1000=%04x phylink=%d aneg=%d carrier=%d "
+			    "chg=%u rnd=%u mdio=%d\n",
+			    tag, n, ctrl, up,
+			    (ctrl >> CTRL_SPEED_SHIFT) & CTRL_SPEED_MASK,
+			    !!(ctrl & CTRL_FULL_DUPLEX),
+			    bmsr1, bmsr2, bmcr, gtcr, anar, stat1000,
+			    !!(bmsr2 & BMSR_LSTATUS),
+			    !!(bmsr2 & BMSR_ANEGCOMPLETE), carrier,
+			    gp->linkchg_count, gp->phy_round, ret);
 
 	/* The two disagreeing is the finding, not an error, so say it once and
 	 * loudly rather than 72 times.  carrier is our own assertion; up is
@@ -3878,7 +3894,7 @@ static void gbe_watch(struct timer_list *t)
 	 * keeps watching and keeps recovering, silently; a stall still speaks
 	 * up, because txstuck[] and txrst[] are warnings and not gated here.
 	 */
-	const bool log = gp->watch_logged < GBE_WATCH_SAMPLES;
+	const bool log = gbe_debug && gp->watch_logged < GBE_WATCH_SAMPLES;
 
 	if (log)
 		gp->watch_logged++;
@@ -4532,7 +4548,7 @@ static int gbe_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	ret = gbe_alloc_dma(gp);
 	if (ret)
-		return ret;
+		goto err_irqs;
 
 	/* Take the address Orbis programmed before touching the device. */
 	gbe_read_mac(gp, mac);
@@ -4594,6 +4610,9 @@ err_napi:
 	netif_napi_del(&gp->napi);
 err_dma:
 	gbe_free_dma(gp);
+err_irqs:
+	if (pdev->irq)
+		bpcie_free_irqs(pdev->irq, 1);
 	return ret;
 }
 
@@ -4604,6 +4623,8 @@ static void gbe_remove(struct pci_dev *pdev)
 	unregister_netdev(gp->ndev);
 	netif_napi_del(&gp->napi);
 	gbe_free_dma(gp);
+	if (pdev->irq)
+		bpcie_free_irqs(pdev->irq, 1);
 }
 
 static const struct pci_device_id gbe_id_table[] = {

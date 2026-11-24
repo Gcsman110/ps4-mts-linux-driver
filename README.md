@@ -218,6 +218,7 @@ to the correct behaviour.
 | `txring` | `255` | `256` restores the last-descriptor hang |
 | `carrier` | `1` | `0` asserts carrier unconditionally, even when the PHY reports no link |
 | `phy_ctrl` | `0` | `1` runs the firmware's PHY link-acquisition loop |
+| `debug` | `0` | `1` prints periodic watch, link-control and gate diagnostics; monitoring and recovery stay active when it is off |
 
 `ps4_gbe.txring=256` is the useful one: it reproduces the headline bug on
 demand from a working kernel, which is what makes the fix verifiable by
