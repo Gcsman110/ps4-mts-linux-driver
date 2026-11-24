@@ -4548,7 +4548,7 @@ static int gbe_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	ret = gbe_alloc_dma(gp);
 	if (ret)
-		return ret;
+		goto err_irqs;
 
 	/* Take the address Orbis programmed before touching the device. */
 	gbe_read_mac(gp, mac);
@@ -4610,6 +4610,9 @@ err_napi:
 	netif_napi_del(&gp->napi);
 err_dma:
 	gbe_free_dma(gp);
+err_irqs:
+	if (pdev->irq)
+		bpcie_free_irqs(pdev->irq, 1);
 	return ret;
 }
 
@@ -4620,6 +4623,8 @@ static void gbe_remove(struct pci_dev *pdev)
 	unregister_netdev(gp->ndev);
 	netif_napi_del(&gp->napi);
 	gbe_free_dma(gp);
+	if (pdev->irq)
+		bpcie_free_irqs(pdev->irq, 1);
 }
 
 static const struct pci_device_id gbe_id_table[] = {
